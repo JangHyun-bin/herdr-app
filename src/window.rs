@@ -263,8 +263,9 @@ struct Term {
 }
 
 enum TerminalChange {
-    Keep { space: String, tab: String, pane: String, name: String, target: Option<String>, axis: Axis },
+    Keep { space: String, tab: String, pane: String, name: String, target: Option<String>, axis: Axis, folder: Option<String> },
     Park,
+    Detach,
 }
 
 struct PendingTerminalChange {
@@ -2360,13 +2361,15 @@ impl AppWindow {
         }
         if !self.live.contains_key(addr) { return Err(format!("no running terminal {addr:?}")); }
         if self.changing_terminals.contains(addr) { return Err("This terminal already has a pane change in progress.".into()); }
-        let space = self.model.active_space().map(|p| p.id.clone()).ok_or("no space to keep it in")?;
-        let machine = self.machine_of(&space);
-        if addr.split_once('/').map(|(m, _)| m) != machine.as_deref() {
-            return Err("A terminal's pane must stay on its own machine.".into());
-        }
+        let machine = addr.split_once('/').map(|(m, _)| m.to_owned());
         self.require_document(machine.as_deref())?;
-        let target = matches!(place, "right" | "down").then(|| self.model.focused_pane()).flatten();
+        let existing = self.model.active_space().filter(|s| s.machine == machine)
+            .or_else(|| self.model.spaces.iter().find(|s| s.machine == machine)).map(|s| s.id.clone());
+        let folder = existing.is_none().then(|| self.cwds.get(addr).cloned()
+            .or_else(|| self.live.get(addr).and_then(|r| r["cwd"].as_str()).map(str::to_owned)).unwrap_or_default());
+        let space = existing.unwrap_or_else(|| self.model.fresh_id_on("sp", machine.as_deref()));
+        let target = matches!(place, "right" | "down").then(|| self.model.focused_pane()).flatten()
+            .filter(|p| self.model.space_of(p).is_some_and(|s| s.id == space));
         let ctx = target.as_deref().and_then(|p| self.model.tab_of(p)).map(|t| t.id.clone())
             .unwrap_or_else(|| self.model.fresh_id_on("tb", machine.as_deref()));
         let pane = self.model.fresh_id_on("p", machine.as_deref());
@@ -2375,7 +2378,7 @@ impl AppWindow {
         let (address, place) = (addr.to_owned(), place.to_owned());
         let reply = json!({"pending":true,"terminal":addr,"pane":pane,"tab":ctx});
         self.start_terminal_change(address, TerminalChange::Keep {
-            space, tab: ctx, pane, name, target, axis: if place == "right" { Axis::Row } else { Axis::Column },
+            space, tab: ctx, pane, name, target, axis: if place == "right" { Axis::Row } else { Axis::Column }, folder,
         }, window, cx);
         Ok(reply)
     }
@@ -2388,13 +2391,37 @@ impl AppWindow {
         Ok(json!({"pending":true,"terminal":addr}))
     }
 
+    fn detach_panes(&mut self, panes: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Result<Value, String> {
+        let spaces: std::collections::HashSet<_> = panes.iter().filter_map(|p| self.model.space_of(p).map(|s| s.id.clone())).collect();
+        // A pending keep must not recreate a space that was just closed.
+        if self.pending_terminals.values().any(|p| matches!(&p.change, TerminalChange::Keep { space, .. } if spaces.contains(space)))
+            || self.changing_terminals.iter().any(|a| self.model.pane_of(a).and_then(|p| self.model.space_of(&p)).is_some_and(|s| spaces.contains(&s.id)))
+        { return Err("A terminal in this space already has a pane change in progress.".into()); }
+        for pane in &panes {
+            let space = self.model.space_of(pane).ok_or("no pane to detach")?;
+            self.require_document(space.machine.as_deref())?;
+        }
+        let mut pending = false;
+        for pane in panes {
+            if let Some(addr) = self.model.address_of(&pane) {
+                pending = true;
+                self.start_terminal_change(addr, TerminalChange::Detach, window, cx);
+            } else {
+                self.model.remove_pane(&pane);
+            }
+        }
+        Ok(json!({"pending":pending}))
+    }
+
     fn start_terminal_change(&mut self, address: String, change: TerminalChange, window: &mut Window, cx: &mut Context<Self>) {
         let machine = address.split_once('/').map(|(m, _)| m);
         let (keep, labels) = match &change {
             TerminalChange::Keep { space, tab, .. } => (true, json!({
                 "herdr.space":crate::mirror::local(space, machine), "herdr.tab":crate::mirror::local(tab, machine),
+                "rove.detached":"",
             })),
-            TerminalChange::Park => (false, json!({"herdr.space":"","herdr.tab":""})),
+            TerminalChange::Park => (false, json!({"herdr.space":"","herdr.tab":"","rove.detached":""})),
+            TerminalChange::Detach => (false, json!({"herdr.space":"","herdr.tab":"","rove.detached":"1"})),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         self.changing_terminals.insert(address.clone());
@@ -2404,8 +2431,8 @@ impl AppWindow {
         // The drain must not need the foreground continuation to start this work.
         let job = cx.background_executor().spawn(async move {
             let result = (|| {
-                core.call("terminal.label", json!({"terminal":addr,"labels":labels}))?;
                 core.call("terminal.keep", json!({"terminal":addr,"keep":keep}))?;
+                core.call("terminal.label", json!({"terminal":addr,"labels":labels}))?;
                 anyhow::Ok(())
             })().map_err(|e| format!("{e:#}"));
             let _ = tx.send(result);
@@ -2429,8 +2456,14 @@ impl AppWindow {
             return;
         }
         match change {
-            TerminalChange::Keep { space, tab, pane, name, target, axis } => {
+            TerminalChange::Keep { space, tab, pane, name, target, axis, folder } => {
                 if !self.live.contains_key(&address) { return; }
+                if let Some(folder) = folder
+                    && self.model.space(&space).is_none()
+                {
+                    self.model.add_space(&space, "", &folder, Tab::new(&tab, &name, &pane, &address));
+                    self.model.space_mut(&space).unwrap().machine = address.split_once('/').map(|(m, _)| m.to_owned());
+                }
                 if self.model.space(&space).is_none() {
                     if let Err(error) = self.park_terminal(&address, window, cx) {
                         tracing::error!("cannot undo pane placement into closed space: {error}");
@@ -2448,7 +2481,7 @@ impl AppWindow {
                 }
                 if let Some(pane) = self.model.pane_of(&address) { self.model.focus_pane(&pane); }
             }
-            TerminalChange::Park => {
+            TerminalChange::Park | TerminalChange::Detach => {
                 if let Some(pane) = self.model.pane_of(&address) { self.model.remove_pane(&pane); }
             }
         }
@@ -2581,7 +2614,7 @@ impl AppWindow {
             let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k));
             let target = node.and_then(|id| self.model.space(id).or_else(|| self.model.space_of(id))).or_else(|| self.model.active_space());
             let machine = if name == "space.new" { Self::arg(&args, "machine") }
-                else if name == "terminal.park" { Self::arg(&args, "terminal").and_then(|a| a.split_once('/').map(|(m, _)| m)) }
+                else if matches!(name, "terminal.park" | "terminal.keep") { Self::arg(&args, "terminal").and_then(|a| a.split_once('/').map(|(m, _)| m)) }
                 else { target.and_then(|s| s.machine.as_deref()) };
             if let Err(error) = self.require_document(machine) { return json!({"error":error}); }
         }
@@ -2632,17 +2665,9 @@ impl AppWindow {
             "space.close" => {
                 let Some(id) = Self::owned(a, "id").or_else(|| self.model.active.clone()) else { return self.fail("no space to close") };
                 let Some(p) = self.model.space(&id) else { return self.fail(format!("no space {id:?}")) };
-                if a.get("confirmed").and_then(Value::as_bool) != Some(true) {
-                    if !person {
-                        return self.fail("space.close ends its terminals: pass confirmed: true");
-                    }
-                    let panes: usize = p.tabs.iter().map(|c| c.root.panes().len()).sum();
-                    let detail = format!("{} \u{2014} {} tabs, {} terminals", self.model.space_name(p, &home()), p.tabs.len(), panes);
-                    self.confirm("Close space?", &detail, "space.close", json!({ "id": id, "confirmed": true }), window, cx);
-                    return;
-                }
-                let addrs = self.model.remove_space(&id);
-                self.kill(&addrs);
+                let panes = p.tabs.iter().flat_map(|t| t.root.panes()).map(|n| n.id.clone()).collect();
+                let result = self.detach_panes(panes, window, cx);
+                self.answer(result);
             }
             "space.rename" => {
                 let Some(id) = Self::owned(a, "id").or_else(|| self.model.active.clone()) else { return self.fail("no space to rename") };
@@ -2682,15 +2707,10 @@ impl AppWindow {
             }
             "tab.close" => {
                 let Some(id) = Self::owned(a, "id").or(active_ctx) else { return self.fail("no tab to close") };
-                let Some(p) = self.model.space_of(&id) else { return self.fail(format!("no tab {id:?}")) };
-                // The last tab takes its space with it: ask like closing the space.
-                if p.tabs.len() == 1 {
-                    let mut args = json!({ "id": p.id });
-                    args["confirmed"] = a.get("confirmed").cloned().unwrap_or(Value::Null);
-                    return self.dispatch("space.close", &args, person, window, cx);
-                }
-                let (addrs, _) = self.model.remove_tab(&id);
-                self.kill(&addrs);
+                let Some(tab) = self.model.tab(&id) else { return self.fail(format!("no tab {id:?}")) };
+                let panes = tab.root.panes().iter().map(|n| n.id.clone()).collect();
+                let result = self.detach_panes(panes, window, cx);
+                self.answer(result);
             }
             "tab.rename" => {
                 let Some(id) = Self::owned(a, "id").or(active_ctx) else { return self.fail("no tab to rename") };
@@ -2754,13 +2774,8 @@ impl AppWindow {
                 if c.root.find(&pane).is_some_and(|n| !n.closable()) {
                     return;
                 }
-                if c.root.panes().len() == 1 {
-                    let id = c.id.clone();
-                    return self.dispatch("tab.close", &json!({ "id": id }), person, window, cx);
-                }
-                let addr = self.model.address_of(&pane);
-                self.model.remove_pane(&pane);
-                self.kill(&addr.into_iter().collect::<Vec<_>>());
+                let result = self.detach_panes(vec![pane], window, cx);
+                self.answer(result);
             }
             "pane.zoom" => {
                 let pane = Self::owned(a, "pane").or_else(|| self.model.focused_pane());
@@ -2860,6 +2875,13 @@ impl AppWindow {
                 let t = Self::arg(a, "terminal").unwrap_or_default();
                 if !self.live.contains_key(t) {
                     return self.fail(format!("no running terminal {t:?}"));
+                }
+                if a.get("confirmed").and_then(Value::as_bool) != Some(true) {
+                    if !person { return self.fail("terminal.kill stops its process tree: pass confirmed: true"); }
+                    let name = self.live.get(t).and_then(|r| r["name"].as_str()).unwrap_or(t);
+                    let detail = format!("{name} ({t}) — ends this terminal and its unkept sub-agents. This cannot be undone.");
+                    self.confirm("Stop terminal?", &detail, "terminal.kill", json!({"terminal":t,"confirmed":true}), window, cx);
+                    return;
                 }
                 self.kill(&[t.to_owned()]);
             }

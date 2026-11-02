@@ -3,7 +3,7 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
-import { run, props, closeOverlay, theme, spaces, panes, exec, home } from "herdr";
+import { run, props, closeOverlay, theme, spaces, panes, exec, hc, home } from "herdr";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s) {
@@ -208,6 +208,18 @@ export default class Worktree extends View {
 
   async remove() {
     const s = this.space();
+    // Detached terminals still own their working directories.
+    const running = await hc(["ls", "--json"]);
+    if (running.code !== 0) return "Could not check running terminals. Reconnect before removing this worktree.";
+    const norm = p => (p ?? "").replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
+    const top = norm(this.repo.top);
+    const uses = p => norm(p) === top || norm(p).startsWith(top + "/");
+    const tabs = new Set((s?.tabs ?? []).map(t => t.id));
+    const attached = new Set(panes().filter(p => tabs.has(p.tab)).map(p => p.terminal));
+    if ((JSON.parse(running.stdout).terminals ?? []).some(t => t.state === "live"
+      && (t.address.includes("/") ? t.address.split("/")[0] : null) === (this.on ?? null)
+      && (attached.has(t.address) || uses(t.cwd) || uses(t.foreground?.cwd))))
+      return "Stop the terminals using this worktree first, including Detached work. Closing a view only detaches it.";
     const status = await git(this.repo.top, ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain"], this.on);
     if (!status.ok) return status.err || "git status failed.";
     // git refuses a worktree with submodules unless forced, because their
@@ -218,10 +230,9 @@ export default class Worktree extends View {
     this.dirty ||= status.out !== "";
     this.unpushed = [...new Set([...this.unpushed, ...unpushed])];
     if (changed) return "It changed since this opened. Enter again removes it anyway.";
-    // Terminals first: a shell sitting in the folder keeps it busy on Windows.
-    run("space.close", { id: s.id, confirmed: true });
     const force = this.dirty || mods.length > 0;
     const r = await git(this.repo.main, ["worktree", "remove", ...(force ? ["--force"] : []), this.repo.top], this.on);
+    if (r.ok && s?.id) run("space.close", { id: s.id });
     return r.ok ? "" : r.err || "git worktree remove failed.";
   }
 

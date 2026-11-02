@@ -6,7 +6,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { agents, spaces, terminals, run, hc, theme, props, closeOverlay, openOverlay, shared, setShared } from "herdr";
+import { agents, spaces, terminals, panes, run, hc, theme, props, closeOverlay, openOverlay, shared, setShared } from "herdr";
 
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 
@@ -39,7 +39,7 @@ export default class Picker extends View {
     this.filter = "";
     this.input = InputState.new({ placeholder: "Go to a tab, space or agent…" });
     this.input.on("change", (_e, cx) => { this.filter = this.input.value(); this.at = 0; cx.notify(); });
-    this.input.on("submit", () => this.go(this.rows().filter(r => r.kind === "ctx" || r.kind === "new" || r.kind === "space")[this.at]));
+    this.input.on("submit", () => this.go(this.rows().filter(r => r.kind === "ctx" || r.kind === "new" || r.kind === "space" || r.kind === "detached")[this.at]));
     this.input.focus();
     cx.timer.after(600, () => this.input.focus());
     this.at = null;
@@ -91,6 +91,11 @@ export default class Picker extends View {
       out.push({ kind: "earlier", count: quiet.length });
       if (this.showEarlier || f) quiet.forEach(add);
     }
+    const shown = new Set(panes().map(p => p.terminal));
+    const detached = live.filter(t => t.labels?.["rove.detached"] === "1" && !shown.has(t.address)
+      && (!f || `${t.name ?? ""} ${t.address}`.toLowerCase().includes(f)));
+    if (detached.length) out.push({ kind: "detached-head" });
+    detached.forEach(terminal => out.push({ kind: "detached", terminal }));
     out.push({ kind: "new" });
     out.push({ kind: "space", machine: null });
     for (const m of this.machines) out.push({ kind: "space", machine: m });
@@ -101,6 +106,7 @@ export default class Picker extends View {
     if (!r) return;
     this.close();
     if (r.kind === "ctx") run("tab.select", { id: r.ctx.id });
+    else if (r.kind === "detached") run("terminal.keep", { terminal: r.terminal.address });
     else if (r.kind === "new") run("tab.new");
     else if (r.kind === "space") run("space.new", r.machine ? { machine: r.machine } : {});
   }
@@ -113,7 +119,7 @@ export default class Picker extends View {
   render() {
     const t = theme();
     const rows = this.rows();
-    const pickable = rows.filter((r) => r.kind === "ctx" || r.kind === "new" || r.kind === "space");
+    const pickable = rows.filter((r) => r.kind === "ctx" || r.kind === "new" || r.kind === "space" || r.kind === "detached");
     // Opens on where you are.
     if (this.at === null) this.at = Math.max(0, pickable.findIndex((r) => r.kind === "ctx" && r.w.active && r.ctx.active));
     this.at = Math.min(this.at, pickable.length - 1);
@@ -151,7 +157,18 @@ export default class Picker extends View {
           })
           .child(`earlier: ${r.count} quiet space${r.count > 1 ? "s" : ""} ${this.showEarlier ? "▴" : "▾"}`);
       }
+      if (r.kind === "detached-head") return div().px(10).pt(10).pb(3).text_size(11).font_semibold().text_color(t.dim).child("Detached · still running");
       const on = r === sel;
+      if (r.kind === "detached") {
+        const term = r.terminal;
+        return h_flex().id(`pk-detached-${term.address}`).mx(4).px(10).h(32).gap(10).items_center().rounded(7)
+          .cursor_pointer().when(on, el => el.bg(t.hover)).hover(s => s.bg(t.hover)).on_click(() => this.go(r))
+          .child(div().flex_1().truncate().text_color(t.foreground).child(term.name || term.address))
+          .child(div().text_size(11).text_color(t.dim).child(term.address.includes("/") ? term.address.split("/")[0] : "local"))
+          .child(div().text_size(11).text_color(t.muted).child("Reattach"))
+          .child(div().id(`pk-stop-${term.address}`).px(6).py(3).text_color(t.muted).hover(s => s.bg(t.raised).text_color(t.foreground))
+            .on_click((_e, cx) => { cx.stop_propagation(); this.close(); run("terminal.kill", { terminal: term.address }); }).child("Stop…"));
+      }
       if (r.kind === "new" || r.kind === "space") {
         const label = r.kind === "new" ? "new tab" : r.machine ? `new space on ${r.machine}` : "new space";
         return h_flex()

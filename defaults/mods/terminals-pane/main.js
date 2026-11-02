@@ -57,6 +57,6 @@ export default class TerminalsPane extends View {
       .child(this.button(`th-r-${pane}`, "split-right", "pane.split", { direction: "right", pane }))
       .child(this.button(`th-d-${pane}`, "split-down", "pane.split", { direction: "down", pane }))
       .child(this.button(`th-z-${pane}`, p.zoomed ? "unzoom" : "zoom", "pane.zoom", { pane }))
-      .child(this.button(`th-x-${pane}`, "close", "pane.close", { pane }));
+      .child(this.button(`th-x-${pane}`, "detach", "pane.close", { pane }));
   }
 }

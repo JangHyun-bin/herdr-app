@@ -44,9 +44,11 @@ export function playSound(sound: string): null;
  * Runs a command, the same ones keys.json binds (`herdr-app commands` lists them all with their
  * arguments). Structural commands fail while their machine's layout is unavailable.
  * Mod props are stored as given, never machine-qualified. Most commands apply right after
- * the call returns; terminal.keep/park finish in the background and toast on failure.
+ * the call returns; close and terminal.keep/park finish in the background and toast on failure.
  * A rename without a name is asked for;
  * "" gives the space or tab Herdr's automatic name again. The main ones:
+ * Rove close commands detach; processes keep running and appear in the picker.
+ * Stop requires confirmation (UI dialog, or confirmed: true for automation).
  * Spaces: space.new {name?, folder?, tab?, argv?, task?, machine?}, space.close {id?}, space.rename {id?, name},
  *   space.move {id, index}, space.select {index | id}, space.next, space.prev.
  * Tabs: tab.new {name?, space?, folder?, argv?, task?} (argv: an agent, task: its first message)
@@ -55,8 +57,8 @@ export function playSound(sound: string): null;
  *   tab.next, tab.prev.
  * Panes: pane.split {direction: "right" | "down", pane?}, pane.close {pane?}, pane.zoom {pane?},
  *   pane.focus {pane | terminal}, pane.go {direction}, pane.swap {direction}. Pane menus get target { pane, terminal }.
- * Terminals: terminal.open {argv?, folder?, place?: "tab" | "right" | "down"}, terminal.kill {terminal},
- *   terminal.keep {terminal, place?} (a running one without a pane, e.g. a sub-agent, gets one),
+ * Terminals: terminal.open {argv?, folder?, place?: "tab" | "right" | "down"}, terminal.kill {terminal, confirmed?},
+ *   terminal.keep {terminal, place?} (reattach on its own machine; makes a space if needed, never a process),
  *   terminal.park {terminal} (its pane goes, it keeps running; the menu's "Send back"),
  *   terminal.peek {terminal} (peek over the tab, with keep-as-tab and close),
  *   terminal.show {terminal?, pane?} (shown in the pane for now, in place of its own), terminal.copy, terminal.paste,

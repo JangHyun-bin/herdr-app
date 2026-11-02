@@ -1,6 +1,6 @@
 # herdr-app: drive the person's window
 
-Herdr shows spaces, tabs and panes. herdr-core (`hc`) runs their terminals
+Rove (based on Herdr) shows spaces, tabs and panes. herdr-core (`hc`) runs their terminals
 and keeps them alive when the window closes. Use `herdr-app` only to change
 what the person sees. For starting, reading, messaging, waiting on or cleaning
 up agents and programs, read `hc --skill` and use hc.
@@ -19,6 +19,17 @@ prints the built-in command list even without an open window. Do not launch bare
 `herdr-app` to inspect it: that opens or raises the window. Do not stop,
 signal or restart the person's app or core. A window closing does not kill
 its terminals.
+
+In this Rove fork, `pane.close`, `tab.close`, and `space.close` detach views;
+terminal processes continue. They return `pending: true` while core metadata is
+being updated; check `ls` before assuming removal. On failure the view stays.
+Detached live terminals appear in the picker's Detached section and in `hc ls`
+with `rove.detached=1`. `terminal.keep {terminal}` reattaches the same terminal
+on its own machine, creating a space if none exists. It does not start work.
+`terminal.park` returns a sub-agent to its parent without adding a Detached row.
+To end work explicitly, `terminal.kill {terminal, confirmed: true}` stops the
+terminal and its unkept sub-agents. The UI asks first; automation without
+`confirmed: true` fails. Addresses come from discovery, never from guessed PIDs.
 
 ## Show something when asked
 

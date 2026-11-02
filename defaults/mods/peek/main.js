@@ -66,11 +66,12 @@ export default class Peek extends View {
       .when(Boolean(parent), (el) => el.child(div().truncate().text_color(t.dim).child(`from ${parent.name || parent.address}`)))
       .child(div().flex_1())
       .child(
-        this.button(t, "keep", home ? "↗ go to" : "↗ keep", () => {
+        this.button(t, "keep", home ? "↗ go to" : "↗ Reattach", () => {
           run(home ? "pane.focus" : "terminal.keep", { terminal });
           closeOverlay(overlay);
         }),
       )
+      .child(this.button(t, "stop", "Stop…", () => { closeOverlay(overlay); run("terminal.kill", { terminal }); }))
       .child(this.button(t, "close", "✕", () => closeOverlay(overlay)));
   }
 }

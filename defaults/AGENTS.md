@@ -135,7 +135,16 @@ machine first, then machines by name; `space.move` stays inside its machine's bl
   Labels use ids local to that machine; remote ids shown by the app have a
   `<machine>/` prefix (strip it when writing labels on that machine). Adoption
   also enables core keep; `terminal.park` removes the pane and disables keep.
-  When a core change is needed, `terminal.keep` / `terminal.park` acknowledge
+  In Rove, pane/tab/space close detaches views without stopping processes, disables
+  keep, clears the placement labels, and sets `rove.detached=1`. The picker lists
+  these live terminals under Detached; Reattach (`terminal.keep`) chooses the
+  terminal's machine and creates a space if needed, without starting a new process.
+  Stop (`terminal.kill`) is separate: the UI asks first, automation requires
+  `confirmed: true`. It stops the terminal and its unkept sub-agents. Detached
+  work follows core's existing retention policy; a lost process is not recovered.
+  Worktree removal refuses while known attached or detached terminals use it;
+  explicitly Stop them first and retry.
+  When a core change is needed, close / `terminal.keep` / `terminal.park` acknowledge
   with `pending: true`, then apply after the machine replies; failures show a toast.
   Normal quit waits for pending terminal changes and layout writes; remote waits are bounded.
   An id Herdr doesn't know becomes a new space or tab (unnamed: Herdr's names).
@@ -489,7 +498,7 @@ The one way to change anything; keys, mods (`run(name, args)`), menus and
 you use the same list. `herdr-app commands` prints every one with its arguments
 (which are required) and what it does. Unknown argument names are errors and list
 valid names; they never fall back to the current target. For example, closing a
-space uses `herdr-app do space.close --id <id> --confirmed true`, not `--space`.
+space uses `herdr-app do space.close --id <id>`, not `--space`.
 The main ones:
 
 - Spaces: `space.new {name?, folder?, tab?, argv?, task?, machine?}`
@@ -506,7 +515,7 @@ The main ones:
   toast with its exit code and last output lines. Or `tab.new {name?, space?, mod,
   props?}` for a tab whose only pane is a mod (a file, a board; split a shell
   in beside it like any tab), `tab.close {id?, confirmed?}` (closing the last tab
-  closes its space and asks first unless confirmed),
+  detaches its terminals and removes its empty space),
   `tab.rename {id?, name}` ("": its number again), `tab.move {id, index}`,
   `tab.select {index | id}`, `tab.next`, `tab.prev`,
   `tab.settle {id?}`, `tab.unsettle {id?}` (index, next and prev
@@ -520,7 +529,7 @@ The main ones:
   `terminal.show` fail, as do `terminal.open`/`terminal.keep` with place right/down.
   They never act on the terminal's source pane. An explicit `pane` still targets that
   model pane; composition edits belong to the mod (edit its layout instead).
-- Terminals: `terminal.open {argv?, folder?, place?, name?}`, `terminal.kill {terminal}`,
+- Terminals: `terminal.open {argv?, folder?, place?, name?}`, `terminal.kill {terminal, confirmed?}`,
   `terminal.keep {terminal, place?}`, `terminal.park {terminal}`,
   `terminal.peek {terminal}` (peek over the tab, with keep-as-tab and close),
   `terminal.show {terminal?, pane?}`, `terminal.copy`, `terminal.paste` (an image
