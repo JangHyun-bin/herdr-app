@@ -208,6 +208,8 @@ export default class Worktree extends View {
 
   async remove() {
     const s = this.space();
+    // shortcut: aggregate listing can omit remote owners; enable removal when core offers a complete host query.
+    if (this.on) return "Remote worktree removal is unavailable in Rove. Stop its terminals and remove it on that host.";
     // Detached terminals still own their working directories.
     const running = await hc(["ls", "--json"]);
     if (running.code !== 0) return "Could not check running terminals. Reconnect before removing this worktree.";

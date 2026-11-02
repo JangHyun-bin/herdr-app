@@ -143,7 +143,8 @@ machine first, then machines by name; `space.move` stays inside its machine's bl
   `confirmed: true`. It stops the terminal and its unkept sub-agents. Detached
   work follows core's existing retention policy; a lost process is not recovered.
   Worktree removal refuses while known attached or detached terminals use it;
-  explicitly Stop them first and retry.
+  explicitly Stop them first and retry. Remote worktree removal is unavailable
+  until core offers a complete host-local listing; remove it on that host after stopping its work.
   When a core change is needed, close / `terminal.keep` / `terminal.park` acknowledge
   with `pending: true`, then apply after the machine replies; failures show a toast.
   Normal quit waits for pending terminal changes and layout writes; remote waits are bounded.

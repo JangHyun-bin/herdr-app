@@ -2430,11 +2430,7 @@ impl AppWindow {
         let addr = address.clone();
         // The drain must not need the foreground continuation to start this work.
         let job = cx.background_executor().spawn(async move {
-            let result = (|| {
-                core.call("terminal.keep", json!({"terminal":addr,"keep":keep}))?;
-                core.call("terminal.label", json!({"terminal":addr,"labels":labels}))?;
-                anyhow::Ok(())
-            })().map_err(|e| format!("{e:#}"));
+            let result = crate::terminal_change::apply(&addr, keep, labels, |method, params| core.call(method, params));
             let _ = tx.send(result);
         });
         cx.spawn_in(window, async move |this, cx| {
